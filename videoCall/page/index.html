@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Client</title>
+    <style>
+      .video-wrapper {
+        position: relative;
+        width: fit-content;
+      }
+
+      #localVideo {
+        position: absolute;
+        right: 0;
+        top: 0;
+
+        width: 200px;
+        height: 200px;
+        background-color: #ccc;
+      }
+
+      #remoteVideo {
+        width: 600px;
+        height: 600px;
+        background-color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="video-wrapper">
+        <video id="localVideo"></video>
+        <video id="remoteVideo"></video>
+      </div>
+
+      <button id="startBtn">发起视频</button>
+    </div>
+
+    <script>
+      const socket = new WebSocket("ws://localhost:3000");
+      const peer = new RTCPeerConnection();
+
+      const localVideo = document.querySelector("#localVideo");
+      const remoteVideo = document.querySelector("#remoteVideo");
+      const startBtn = document.querySelector("#startBtn");
+
+      remoteVideo.onl;
+
+      peer.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log("收集发送候选！");
+          socket.send(JSON.stringify({ type: "candidate", iceCandidate: e.candidate }));
+        } else {
+          console.log("收集完成！");
+        }
+      };
+
+      // 通过不断收集ICE信息（onicecandidate），发起方和应答方最终将建立一条最优的连接方式，此时会触发 ontrack 回调，即可获取到对等方的媒体流。
+      peer.ontrack = (e) => {
+        if (e && e.streams) {
+          remoteVideo.srcObject = e.streams[0];
+          remoteVideo.play();
+        }
+      };
+
+      const closeWs = () => {
+        if (!socket) return;
+        socket.close();
+      };
+
+      window.addEventListener("beforeunload", closeWs);
+
+      // 监听服务是否链接
+      socket.addEventListener("open", () => {
+        console.log("websocket 连接成功");
+        socket.send(JSON.stringify({ type: "login", username: "user_" + (Math.random() * 1000).toFixed(0) }));
+      });
+
+      const startConnect = async () => {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = mediaStream;
+        localVideo.play();
+        mediaStream.getTracks().forEach((track) => {
+          peer.addTrack(track, mediaStream);
+        });
+
+        const offer = await peer.createOffer();
+        peer.setLocalDescription(offer);
+        socket.send(JSON.stringify(offer));
+      };
+
+      startBtn.addEventListener("click", startConnect);
+
+      socket.addEventListener("message", async (e) => {
+        if (!e.data) return;
+        const textedData = await e.data.text();
+
+        const { type, sdp, iceCandidate } = JSON.parse(textedData);
+        console.log("[clientA 接收到消息]: ", { type, sdp, iceCandidate });
+
+        switch (type) {
+          case "candidate":
+            peer.addIceCandidate(iceCandidate);
+            break;
+
+          case "offer":
+            {
+              const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+              localVideo.srcObject = mediaStream;
+              localVideo.play();
+              mediaStream.getTracks().forEach((track) => {
+                peer.addTrack(track, mediaStream);
+              });
+
+              const remoteDescription = new RTCSessionDescription({ type, sdp });
+              await peer.setRemoteDescription(remoteDescription);
+
+              const answer = await peer.createAnswer();
+              await peer.setLocalDescription(answer);
+              socket.send(JSON.stringify(answer));
+            }
+            break;
+
+          case "answer":
+            peer.setRemoteDescription(new RTCSessionDescription({ type, sdp }));
+            break;
+
+          default:
+            break;
+        }
+      });
+    </script>
+  </body>
+</html>

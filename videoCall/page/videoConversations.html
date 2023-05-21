@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>videoConversations</title>
+    <style>
+      ul,
+      li {
+        list-style: none;
+      }
+      .video-wrapper {
+        position: relative;
+        width: fit-content;
+      }
+
+      #localVideo {
+        position: absolute;
+        right: 0;
+        top: 0;
+
+        width: 200px;
+        height: 200px;
+        background-color: #ccc;
+      }
+
+      #remoteVideo {
+        width: 600px;
+        height: 600px;
+        background-color: #aaa;
+      }
+    </style>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <div class="video-wrapper">
+        <video id="localVideo" ref="localVideo"></video>
+        <video id="remoteVideo" ref="remoteVideo"></video>
+      </div>
+
+      <div>
+        <h2>用户列表</h2>
+        <ul>
+          <li v-for="user in displayUserList" :key="user">
+            <span style="margin-right: 12px"> {{ user }} </span>
+
+            <span v-if="counterPartyUsername === user" @click="cancelConnect(user)">结束视频</span>
+            <span v-else @click="startConnect(user)">发起视频</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- <button id="startBtn">发起视频</button> -->
+    </div>
+
+    <script>
+      const { createApp } = Vue;
+
+      const username = "user_" + (Math.random() * 10000).toFixed(0);
+      const socket = new WebSocket("ws://localhost:3000");
+      const peer = new RTCPeerConnection();
+
+      createApp({
+        data() {
+          return {
+            counterPartyUsername: void 0,
+            userList: [],
+          };
+        },
+
+        computed: {
+          displayUserList() {
+            return this.userList.filter((item) => item !== username);
+          },
+        },
+
+        mounted() {
+          this.$refs.localVideo.oncanplay = () => {
+            this.$refs.localVideo.play();
+          };
+          this.$refs.remoteVideo.oncanplay = () => {
+            this.$refs.remoteVideo.play();
+          };
+
+          peer.onicecandidate = (e) => {
+            if (e.candidate) {
+              socket.send(JSON.stringify({ type: "candidate", iceCandidate: e.candidate }));
+            }
+          };
+
+          peer.ontrack = (e) => {
+            if (e && e.streams) {
+              this.$refs.remoteVideo.srcObject = e.streams[0];
+            }
+          };
+
+          // 监听服务是否链接
+          socket.addEventListener("open", () => {
+            console.log("websocket 连接成功");
+            socket.send(JSON.stringify({ type: "login", username }));
+          });
+
+          socket.addEventListener("message", async (e) => {
+            if (!e.data) return;
+            const data = JSON.parse(e.data);
+            console.log(data);
+
+            switch (data.type) {
+              case "userListChange":
+                this.userList = data.list;
+                break;
+
+              case "connect":
+                {
+                  const counterPartyUsername = data.username;
+                  if (confirm(data.username + "邀请你视频，是否接听？")) {
+                    this.counterPartyUsername = counterPartyUsername;
+                    socket.send(JSON.stringify({ type: "confirmConnect", username, counterPartyUsername }));
+                  } else {
+                    socket.send(JSON.stringify({ type: "refuseConnect", username, counterPartyUsername }));
+                  }
+                }
+                break;
+
+              case "connectFailed":
+                alert(data.msg);
+                break;
+
+              case "connectSuccessful":
+                this.startVideoCall();
+                break;
+
+              case "candidate":
+                peer.addIceCandidate(data.iceCandidate);
+                break;
+
+              case "offer":
+                {
+                  const remoteDescription = new RTCSessionDescription({ type: data.type, sdp: data.sdp });
+                  await peer.setRemoteDescription(remoteDescription);
+
+                  const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                  this.$refs.localVideo.srcObject = mediaStream;
+
+                  mediaStream.getTracks().forEach((track) => {
+                    peer.addTrack(track, mediaStream);
+                  });
+
+                  const answer = await peer.createAnswer();
+                  await peer.setLocalDescription(answer);
+                  socket.send(JSON.stringify(answer));
+                }
+                break;
+
+              case "answer":
+                peer.setRemoteDescription(new RTCSessionDescription({ type: data.type, sdp: data.sdp }));
+                break;
+
+              default:
+                break;
+            }
+          });
+        },
+
+        beforeDestroy() {
+          this.closeWs();
+        },
+
+        methods: {
+          closeWs() {
+            socket.close();
+          },
+
+          startConnect(counterPartyUsername) {
+            this.counterPartyUsername = counterPartyUsername;
+            socket.send(JSON.stringify({ type: "connect", username, counterPartyUsername }));
+          },
+
+          cancelConnect() {
+            socket.send(
+              JSON.stringify({ type: "disconnect", username, counterPartyUsername: this.counterPartyUsername })
+            );
+          },
+
+          async startVideoCall() {
+            const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            this.$refs.localVideo.srcObject = mediaStream;
+
+            mediaStream.getTracks().forEach((track) => {
+              peer.addTrack(track, mediaStream);
+            });
+
+            const offer = await peer.createOffer();
+            peer.setLocalDescription(offer);
+            socket.send(JSON.stringify(offer));
+          },
+        },
+      }).mount("#app");
+    </script>
+  </body>
+</html>
